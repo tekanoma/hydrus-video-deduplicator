@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-RUN python3.11 -m pip install hydrusvideodeduplicator
+RUN python3.12 -m pip install hydrusvideodeduplicator
 COPY ./docker-entrypoint.sh ./entrypoint.sh
 
 ENV DEDUP_DATABASE_DIR=/usr/src/app/db
