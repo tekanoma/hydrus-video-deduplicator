@@ -1,7 +1,7 @@
-FROM ubuntu:latest
+FROM python:3.11
 WORKDIR /usr/src/app
 RUN apt-get update && apt-get install -y \
-    python3.11.9 \
+    python3.11 \
     python3-pip \
     git \
     ffmpeg \
