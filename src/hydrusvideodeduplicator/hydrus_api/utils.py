@@ -14,9 +14,9 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import collections
+import collections.abc as abc
 import os
 import typing as T
-import collections.abc as abc
 
 from hydrusvideodeduplicator.hydrus_api import (
     DEFAULT_API_URL,
@@ -84,7 +84,7 @@ def parse_hydrus_metadata(text: str) -> dict[T.Optional[str], set[str]]:
 
 
 def parse_hydrus_metadata_file(
-    path_or_file: T.Union[str, os.PathLike, TextFileLike]
+    path_or_file: T.Union[str, os.PathLike, TextFileLike],
 ) -> dict[T.Optional[str], set[str]]:
     if isinstance(path_or_file, (str, os.PathLike)):
         with open(path_or_file, encoding=HYDRUS_METADATA_ENCODING) as file:

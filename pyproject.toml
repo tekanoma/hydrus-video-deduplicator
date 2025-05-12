@@ -18,6 +18,8 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "platformdirs",
@@ -26,13 +28,12 @@ dependencies = [
     "tqdm",
     "python-dotenv",
     "typer",
-    "sqlitedict",
     "requests",
     "psutil",
     "joblib>=1.4",
     # Below is for vpdqpy
     "pillow",
-    "pyav<12",
+    "av",
 ]
 
 [project.urls]
@@ -82,11 +83,14 @@ gh-deploy = "mkdocs gh-deploy --force --strict --config-file mkdocs-gh-pages.yml
 [tool.hatch.envs.test]
 dependencies = [
     "pytest",
+    "vcrpy", # for replaying saved api requests/responses
 ]
 
 [tool.hatch.envs.test.scripts]
-all = "python -m pytest src/hydrusvideodeduplicator/pdqhashing/tests tests/test_dedupe.py tests/test_vpdqpy.py {args}"
-pdq = "python -m pytest src/hydrusvideodeduplicator/pdqhashing/tests {args}"
+all = "python -m pytest tests/test_db.py src/hydrusvideodeduplicator/pdqhashing/tests tests/test_dedupe.py tests/test_vpdqpy.py --verbose {args}" # TODO: add back `tests/test_main_vcr.py`, see https://github.com/hydrusvideodeduplicator/hydrus-video-deduplicator/issues/69
+pdq = "python -m pytest src/hydrusvideodeduplicator/pdqhashing/tests --verbose {args}"
+db = "python -m pytest tests/test_db.py --verbose {args}"
+vcr = "python -m pytest tests/test_main_vcr.py --verbose {args}"
 
 # Format environment
 
@@ -97,7 +101,7 @@ dependencies = [
 ]
 
 [tool.hatch.envs.format.scripts]
-format = "black src {args}"
+format = "black src tests {args}"
 
 # Lint environment
 
@@ -108,11 +112,11 @@ dependencies = [
 ]
 
 [tool.hatch.envs.lint.scripts]
-format = "black --check src {args}"
-lint = "ruff check src {args}"
+format = "black --check src tests {args}"
+lint = "ruff check src tests {args}"
 
 [tool.black]
-target-version = ["py310", "py311", "py312"]
+target-version = ["py310", "py311", "py312", "py313"]
 line-length = 120
 skip-string-normalization = true
 
@@ -160,5 +164,5 @@ line-length = 120
 # Allow unused variables when underscore-prefixed.
 lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
-# Assume Python 3.10.
-target-version = "py310"
+# Assume Python 3.12.
+target-version = "py312"
