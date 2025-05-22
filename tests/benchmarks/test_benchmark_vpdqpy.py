@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from hydrusvideodeduplicator.vpdqpy.vpdqpy import Vpdq, VpdqHash
-from .check_testdb import check_testdb_exists
+
+from ..check_testdb import check_testdb_exists
 
 if TYPE_CHECKING:
     pass
@@ -27,13 +28,14 @@ if TYPE_CHECKING:
 def test_vpdq_hashing(benchmark):
     """Benchmark VPDQ hashing"""
     """Currently around 7.5 seconds on my PC"""
-    all_vids_dir = Path(__file__).parent / "testdb" / "videos"
+    all_vids_dir = Path(__file__).parents[1] / "testdb" / "videos"
 
     vids_dirs = ["sintel"]
     similarity_vids: list[Path] = []
     for vids_dir in vids_dirs:
         similarity_vids.extend(Path(all_vids_dir / vids_dir).glob("*"))
     vids_hashes = {}
+    assert len(similarity_vids) > 0
 
     @benchmark
     def run():
@@ -46,7 +48,7 @@ def test_vpdq_hashing(benchmark):
 @pytest.mark.benchmark(group="similarity", min_time=0.1, max_time=0.5, min_rounds=1, disable_gc=False, warmup=False)
 def test_vpdq_similarity(benchmark):
     """Benchmark VPDQ similarity"""
-    all_phashes_dir = Path(__file__).parent / "testdb" / "video hashes"
+    all_phashes_dir = Path(__file__).parents[1] / "testdb" / "video hashes"
 
     video_hashes_paths: list[Path] = []
     video_hashes_paths.extend(Path(all_phashes_dir).glob("*"))
@@ -62,6 +64,7 @@ def test_vpdq_similarity(benchmark):
             if j < i:
                 continue
             pairs.append((phash1, phash2))
+    assert len(pairs) > 0
 
     @benchmark
     def run():
