@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from enum import Enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -49,9 +48,8 @@ class HydrusApiException(Exception):
 class FailedPerceptualHashException(Exception):
     """Exception for when files are failed to be perceptually hashed."""
 
-    def __init__(self, file_hash: FileHash, other_exc: str = ""):
-        super().__init__()
-        self.file_hash = file_hash
+    def __init__(self, other_exc: str = ""):
+        super().__init__(other_exc)
         self.other_exc = other_exc
 
 
@@ -76,12 +74,12 @@ class FileHasher:
             phash = compute_phash(file, self.num_threads)
             phash_bytes: bytes = phash.bytes
         except Exception as exc:
-            raise FailedPerceptualHashException("", str(exc))
+            raise FailedPerceptualHashException(str(exc))
 
         # sanity check
         # Note: Hashes may have 0 bytes if there was no frames that were high enough quality to be used.
         if phash_bytes is None or (len(phash_bytes) % vpdq.VpdqHash.bytesPerPdqHash != 0):
-            raise FailedPerceptualHashException("", "phash_str was None or len not multiple of 32.")
+            raise FailedPerceptualHashException("phash_str was None or len not multiple of 32.")
 
         return phash_bytes
 
@@ -124,13 +122,6 @@ class CancelledPerceptualHashException(Exception):
         self.stats = stats
 
 
-class DedupeState(Enum):
-    NONE = 0
-    HASHING = 1
-    BUILDING_SEARCH_TREE = 1
-    SEARCHING_FOR_DUPLICATES = 2
-
-
 @dataclass
 class NoneProgress:
     placeholder: None
@@ -171,13 +162,13 @@ if TYPE_CHECKING:
 class HydrusVideoDeduplicator:
     hydlog = logging.getLogger("hvd")
     hydlog.setLevel(logging.INFO)
-    threshold: float = 75.0
     _DEBUG = False
 
     def __init__(
         self,
         db: DedupeDB.DedupeDb,
         client: HVDClient,
+        similarity_threshold: float = 50.0,
         job_count: int = -2,
         failed_page_name: str | None = None,
         custom_query: Sequence[str] | None = None,
@@ -186,6 +177,7 @@ class HydrusVideoDeduplicator:
     ):
         self.db = db
         self.client = client
+        self.similarity_threshold = similarity_threshold
         self.job_count = job_count
         self.page_logger = None if failed_page_name is None else HydrusPageLogger(self.client, failed_page_name)
         self.search_tags = self.get_search_tags(custom_query)
@@ -207,7 +199,7 @@ class HydrusVideoDeduplicator:
             custom_query = [x for x in custom_query if x.strip()]
             if len(custom_query) > 0:
                 search_tags.extend(custom_query)
-                print(f"[yellow] Custom Query: {custom_query}")
+                print(f"[yellow]Custom Query: {custom_query}")
         return search_tags
 
     def deduplicate(
@@ -228,12 +220,12 @@ class HydrusVideoDeduplicator:
         num_similar_pairs = 0
 
         if skip_hashing:
-            print("[yellow] Skipping perceptual hashing")
+            print("[yellow]Skipping perceptual hashing")
         else:
             video_hashes = list(self.client.get_video_hashes(self.search_tags))
             video_hashes = self.filter_unhashed(video_hashes)
-            print(f"[blue] Found {len(video_hashes)} eligible files to perceptually hash.")
-            print("\nTip: You can skip perceptual hashing at any time by pressing CTRL+C.")
+            print(f"[blue]Found {len(video_hashes)} eligible files to perceptually hash.")
+            print("\nTip: You can skip perceptual hashing at any time by pressing CTRL+C.\n")
             self.hydlog.info("Starting perceptual hash processing")
             self.db.begin_transaction()
             with self.db.conn:
@@ -243,52 +235,52 @@ class HydrusVideoDeduplicator:
                 except CancelledPerceptualHashException as exc:
                     # Interrupted, but on purpose.
                     stats = exc.stats
-                    print("[yellow] Perceptual hash processing was interrupted! Progress was saved.")
+                    print("[yellow]Perceptual hash processing was interrupted! Progress was saved.")
                 else:
-                    print("[green] Finished perceptual hash processing.")
+                    print("[green]Finished perceptual hash processing.")
                 finally:
                     if self.update_progress_callback:
                         self.update_progress_callback(NoneProgress(None))
                     # Print some useful stats and info for users
                     total_failures = stats.failed_from_api_errors_count + stats.failed_from_phash_count
                     if total_failures > 0:
-                        print(f"[yellow] Perceptual hash processing had {total_failures} total failed files.")
+                        print(f"[yellow]Perceptual hash processing had {total_failures} total failed files.")
 
                         if stats.failed_from_api_errors_count > 0:
                             print(
-                                f"[yellow] {stats.failed_from_api_errors_count} failures were due to API errors. Ensure Hydrus is running and accessible before trying again."  # noqa: E501
+                                f"[yellow]{stats.failed_from_api_errors_count} failures were due to API errors. Ensure Hydrus is running and accessible before trying again."  # noqa: E501
                             )
 
                         if stats.failed_from_phash_count > 0:
                             print(
-                                f"[yellow] {stats.failed_from_phash_count} failures were from an error during perceptual hashing. Are the files corrupted?"  # noqa: E501
+                                f"[yellow]{stats.failed_from_phash_count} failures were from an error during perceptual hashing. Are the files corrupted?"  # noqa: E501
                             )
                             print(
                                 "\nTip: You could have seen which files failed directly in Hydrus by "
                                 "creating a Hydrus page with the name 'failed' and "
                                 "running the program with '--failed-page-name=failed'\n"
                             )
-                    print(f"[green] Added {stats.success_hash_count} new perceptual hashes to the database.")
+                    print(f"[green]Added {stats.success_hash_count} new perceptual hashes to the database.")
 
         # Insert the perceptual hashed files into the vptree.
-        print("\nTip: You can skip building the search tree at any time by pressing CTRL+C.")
+        print("\nTip: You can skip building the search tree at any time by pressing CTRL+C.\n")
         self.db.begin_transaction()
         with self.db.conn:
             try:
                 self.process_phashed_file_queue()
             except KeyboardInterrupt:
-                print("[yellow] Building the search tree was interrupted! Progress was saved.")
+                print("[yellow]Building the search tree was interrupted! Progress was saved.")
             else:
-                print("[green] Finished fully building the search tree.")
+                print("[green]Finished fully building the search tree.")
 
         self.db.begin_transaction()
         with self.db.conn:
             try:
                 self.run_maintenance()
             except KeyboardInterrupt:
-                print("[yellow] Maintenance was interrupted!")
+                print("[yellow]Maintenance was interrupted!")
             else:
-                print("[green] Finished maintenance.")
+                print("[green]Finished maintenance.")
 
         # Number of potential duplicates before adding more.
         # This is just to print info for the user.
@@ -296,21 +288,21 @@ class HydrusVideoDeduplicator:
         #       while this is running.
         pre_dedupe_count = self.client.get_potential_duplicate_count_hydrus()
 
-        print("\nTip: You can skip finding potential duplicates at any time by pressing CTRL+C.")
+        print("\nTip: You can skip finding potential duplicates at any time by pressing CTRL+C.\n")
         self.db.begin_transaction()
         with self.db.conn:
             try:
                 num_similar_pairs = self.find_potential_duplicates()
             except KeyboardInterrupt:
-                print("[yellow] Searching for duplicates was interrupted! Progress was saved.")
+                print("[yellow]Searching for duplicates was interrupted! Progress was saved.")
 
         # Statistics for user
         post_dedupe_count = self.client.get_potential_duplicate_count_hydrus()
         new_dedupes_count = post_dedupe_count - pre_dedupe_count
         if new_dedupes_count > 0:
-            print(f"[green] {new_dedupes_count} new potential duplicate pairs marked for manual processing!")
+            print(f"[green]{new_dedupes_count} new potential duplicate pairs marked for manual processing!")
         else:
-            print("[green] No new potential duplicate pairs found.")
+            print("[green]No new potential duplicate pairs found.")
 
         self.hydlog.info(f"{num_similar_pairs} similar file pairs found.")
         self.hydlog.info("Deduplication done.")
@@ -354,11 +346,11 @@ class HydrusVideoDeduplicator:
                         # We only want to add the failure to the page if the file was the actual cause of failure.
                         if isinstance(result.exc, HydrusApiException):
                             stats.failed_from_api_errors_count += 1
-                            print("[red] Hydrus API error during perceptual hashing:")
+                            print("[red]Hydrus API error during perceptual hashing:")
                             print(f"{result.exc}")
                         else:
                             stats.failed_from_phash_count += 1
-                            print("[red] Failed to perceptually hash a file.")
+                            print("[red]Failed to perceptually hash a file.")
                             print(f"Failed file SHA256 hash: {result.file_hash}")
                             print(f"{result.exc}")
                             if self.page_logger:
@@ -433,13 +425,13 @@ class HydrusVideoDeduplicator:
 
     def run_maintenance(self):
         """Run maintenance, if needed."""
+        # TODO: Currently broken. If it's cancelled while running it will report all the branches as broken.
+        return
         tree = vptree.VpTreeManager(self.db)
-        search_threshold = vptree.fix_vpdq_similarity((self.threshold))
-        assert search_threshold > 0 and isinstance(search_threshold, int)
 
-        if tree.maintenance_due(search_threshold):
+        if tree.maintenance_due():
             # TODO: Do further testing on this.
-            print("[blue] Running search tree maintenance...")
+            print("[blue]Running search tree maintenance...")
             tree.maintain_tree()
 
     def find_potential_duplicates(
@@ -450,10 +442,8 @@ class HydrusVideoDeduplicator:
 
         Returns the number of similar file pairs found.
         """
-        # TODO: Should we turn the inside of this function into a generator? It might make testing super easy.
         tree = vptree.VpTreeManager(self.db)
-        search_threshold = vptree.fix_vpdq_similarity((self.threshold))
-        assert search_threshold > 0 and isinstance(search_threshold, int)
+        search_threshold = vptree.fix_vpdq_similarity(self.similarity_threshold)
 
         files = self.db.execute(
             "SELECT hash_id FROM shape_search_cache WHERE searched_distance is NULL or searched_distance < :threshold",
@@ -469,7 +459,8 @@ class HydrusVideoDeduplicator:
                 if self.update_progress_callback:
                     self.update_progress_callback(SearchingForDuplicatesProgress(complete=pbar.n, total=pbar.total))
                 if self.should_skip_step_fn and self.should_skip_step_fn():
-                    return
+                    # Stop searching, but still report the pairs found so far.
+                    break
 
                 hash_id = hash_id[0]
                 result = tree.search_file(hash_id, max_hamming_distance=search_threshold)

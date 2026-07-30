@@ -29,7 +29,6 @@ dependencies = [
     "python-dotenv",
     "typer",
     "requests",
-    "psutil",
     # vpdqpy dependencies
     "pillow",
     "av",
@@ -38,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = [
-  "pyside6",
+  "pyside6-essentials",
 ]
 
 [project.urls]

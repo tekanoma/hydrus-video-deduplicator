@@ -8,7 +8,6 @@ if TYPE_CHECKING:
     from typing import TypeAlias
 
     FileServiceKeys: TypeAlias = list[str]
-    FileHashes: TypeAlias = Iterable[str]
 
 from urllib3.connection import NewConnectionError
 
@@ -50,16 +49,6 @@ class HVDClient:
             else self.get_default_file_service_keys()
         )
         self.verify_file_service_keys()
-
-    def get_video(self, video_hash: str) -> bytes:
-        """
-        Retrieves a video from Hydrus by the videos hash.
-
-        Returns the video bytes.
-        """
-        video_response = self.client.get_file(hash_=video_hash)
-        video = video_response.content
-        return video
 
     def get_potential_duplicate_count_hydrus(self) -> int:
         return self.client.get_potentials_count(file_service_keys=self.file_service_keys)["potential_duplicates_count"]
@@ -131,28 +120,6 @@ class HVDClient:
         )["hashes"]
         return all_video_hashes
 
-    def are_files_deleted_hydrus(self, file_hashes: FileHashes) -> dict[str, bool]:
-        """
-        Check if files are trashed or deleted in Hydrus
-
-        Returns a dictionary of {hash, trashed_or_not}
-        """
-        videos_metadata = self.client.get_file_metadata(hashes=file_hashes, only_return_basic_information=False)[
-            "metadata"
-        ]
-
-        result: dict[str, bool] = {}
-        for video_metadata in videos_metadata:
-            # This should never happen, but it shouldn't break the program if it does
-            if "hash" not in video_metadata:
-                self._log.error("Hash not found for potentially trashed file.")
-                continue
-            video_hash = video_metadata["hash"]
-            is_deleted: bool = video_metadata.get("is_deleted", False)
-            result[video_hash] = is_deleted
-
-        return result
-
     def reset_potential_duplicates(self, file_hashes: Iterable[str]):
         """
         Remove the potential duplicate status for the provided file hashes in Hydrus.
@@ -189,10 +156,8 @@ def create_client(*args) -> HVDClient:
             pretty_msg = "Failed to connect to Hydrus. SSL certificate verification failed."
         # Probably tried using http instead of https when client is https
         elif "Connection aborted" in str(exc):
-            pretty_msg = (
-                "Failed to connect to Hydrus.\nDoes your Hydrus Client API 'http/https' setting match your API URL?"
-            )
-        elif "Connection refused" in str(exc):
+            pretty_msg = "Failed to connect to Hydrus.\nDoes your Hydrus Client API 'use https' setting match your API URL? (hint: services -> manage services -> client api -> use https)"  # noqa: E501
+        elif "Connection refused" in str(exc) or "Max retries exceeded with url" in str(exc):
             pretty_msg = """Failed to connect to Hydrus.
 Is your Hydrus instance running?
 Is the client API enabled? (hint: services -> manage services -> client api)

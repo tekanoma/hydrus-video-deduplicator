@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['..\\..\\src\\hydrusvideodeduplicator\\winexe_entrypoint.py'],
+    ['..\\..\\src\\hydrusvideodeduplicator\\cli_exe_entrypoint.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='hydrusvideodeduplicator',
+    name='hydrusvideodeduplicator-windows-x86_64',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['icon.ico'],
 )

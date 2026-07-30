@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QObject, Slot, QThread, QSemaphore
 from PySide6.QtGui import QFont
 from dataclasses import dataclass
+import functools
+from pathlib import Path
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -30,11 +32,7 @@ import logging
 from hydrusvideodeduplicator.db import DedupeDB
 from hydrusvideodeduplicator.__about__ import __version__
 from hydrusvideodeduplicator.config import (
-    HYDRUS_API_URL,
-    HYDRUS_API_KEY,
-    HYDRUS_LOCAL_FILE_SERVICE_KEYS,
-    REQUESTS_CA_BUNDLE,
-    DEDUP_DATABASE_DIR,
+    Config,
 )
 from hydrusvideodeduplicator.dedup_util import print_and_log
 from hydrusvideodeduplicator.dedup import (
@@ -46,98 +44,7 @@ from hydrusvideodeduplicator.dedup import (
     SearchingForDuplicatesProgress,
     DoneProgress,
 )
-
-DARK_STYLESHEET = """
-QWidget {
-    background-color: #1a1a1a;
-    color: #e8e8e8;
-    font-family: "Segoe UI";
-    font-size: 13pt;
-}
-
-QLabel {
-    color: #e8e8e8;
-    font-weight: 450;
-}
-
-QLineEdit {
-    background-color: #2a2a2a;
-    color: #e8e8e8;
-    border: 1.5px solid #3a3a3a;
-    border-radius: 4px;
-    padding: 8px 10px;
-    font-size: 12pt;
-    selection-background-color: #0d47a1;
-}
-
-QLineEdit:focus {
-    border: 1.5px solid #4a9eff;
-    background-color: #2e2e2e;
-}
-
-QLineEdit::placeholder {
-    color: #888888;
-}
-
-QLineEdit:read-only {
-    background-color: #242424;
-    color: #a8a8a8;
-    border: 1.5px solid #333333;
-}
-
-QPushButton {
-    background-color: #0d47a1;
-    color: #ffffff;
-    border: none;
-    border-radius: 5px;
-    padding: 10px 16px;
-    font-weight: 600;
-    font-size: 12pt;
-}
-
-QPushButton:hover {
-    background-color: #1565c0;
-}
-
-QPushButton:pressed {
-    background-color: #0a3d91;
-}
-
-QPushButton:disabled {
-    background-color: #2a2a2a;
-    color: #737373;
-}
-
-QCheckBox {
-    spacing: 8px;
-    color: #e8e8e8;
-}
-
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-}
-
-QCheckBox::indicator:unchecked {
-    border: 1.5px solid #555555;
-    background-color: #2a2a2a;
-    border-radius: 2px;
-}
-
-QCheckBox::indicator:checked {
-    border: 1.5px solid #4a9eff;
-    background-color: #0d47a1;
-    border-radius: 2px;
-}
-
-QMessageBox {
-    background-color: #1a1a1a;
-}
-
-QMessageBox QLabel {
-    color: #e8e8e8;
-}
-"""
+from hydrusvideodeduplicator.gui import stylesheet
 
 
 @dataclass
@@ -154,7 +61,7 @@ class DedupeParameters:
     failed_page_name: str | None
     custom_query: Sequence[str] | None
     debug: bool
-    threshold: float
+    similarity_threshold: float
     skip_hashing: bool
 
 
@@ -210,6 +117,7 @@ class Worker(QObject):
             deduper = HydrusVideoDeduplicator(
                 self.db,
                 client=hvdclient,
+                similarity_threshold=dedupe_params.similarity_threshold,
                 job_count=dedupe_params.job_count,
                 failed_page_name=dedupe_params.failed_page_name,
                 custom_query=dedupe_params.custom_query,
@@ -221,18 +129,11 @@ class Worker(QObject):
                 deduper.hydlog.setLevel(logging.DEBUG)
                 deduper._DEBUG = True
 
-            if dedupe_params.threshold < 0.0 or dedupe_params.threshold > 100.0:
-                print("[red] ERROR: Invalid similarity threshold. Must be between 0 and 100.")
-                raise
-            HydrusVideoDeduplicator.threshold = dedupe_params.threshold
-
             num_similar_pairs = deduper.deduplicate(
                 skip_hashing=dedupe_params.skip_hashing,
             )
             self.dedupe_completed.emit(f"{num_similar_pairs}", None)
-        except (FailedHVDClientConnection, ClientAPIException, Exception) as exc:
-            print_and_log(self.logger, str(exc), logging.ERROR)
-            # print_and_log(logger, exc.pretty_msg, logging.ERROR)
+        except Exception as exc:
             self.dedupe_completed.emit(None, exc)
 
     @Slot()
@@ -252,23 +153,19 @@ class Worker(QObject):
             print_and_log(self.logger, f"Hydrus API version: 'v{hydrus_api_version}'")
             hvdclient.verify_permissions()
             self.test_api_connection_completed.emit(APITestResult(api_version, hydrus_api_version), None)
-        except (FailedHVDClientConnection, ClientAPIException, Exception) as exc:
-            print_and_log(self.logger, str(exc), logging.ERROR)
+        except Exception as exc:
             self.test_api_connection_completed.emit(None, exc)
 
     @Slot()
-    def init_db_connection(self):
+    def init_db_connection(self, db_dir: Path):
         if self.db is not None:
             # TODO: Check if transaction is in progress before closing?
             self.db.close()
 
-        # TODO: Show the upgrade on the GUI. Probably pass a callback to db.upgrade_db()
-        # for the print msg between upgrades to show an upgrade sequence similar to Hydrus. For
-        # the CLI this will be print, for the GUI this will update the GUI msg.
-        DedupeDB.set_db_dir(DEDUP_DATABASE_DIR)
+        DedupeDB.set_db_dir(db_dir)
         if DedupeDB.does_db_exist():
             try:
-                print_and_log(self.logger, f"Found existing database at '{DedupeDB.get_db_file_path()}'")
+                print_and_log(self.logger, f"Found existing database at: '{DedupeDB.get_db_file_path()}'")
                 self.db = DedupeDB.DedupeDb(DedupeDB.get_db_dir(), DedupeDB.get_db_name())
                 self.db.init_connection()
                 # Upgrade the database before doing anything.
@@ -403,20 +300,34 @@ class Worker(QObject):
             self.run_db_maintenance_completed.emit(None, stats_before, stats_after)
 
 
+def ignore_after_close(callback):
+    """Decorator to drop a worker callback that arrives after the window has started closing."""
+
+    @functools.wraps(callback)
+    def wrapper(self, *args, **kwargs):
+        if self._shutting_down:
+            return None
+        return callback(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MainWindow(QWidget):
     dedupe_requested = Signal(HydrusRequestParameters, DedupeParameters)
     test_api_connection_requested = Signal(HydrusRequestParameters)
     init_requested = Signal(logging.Logger, QSemaphore)
-    init_db_requested = Signal()
+    init_db_requested = Signal(Path)
     clear_search_tree_requested = Signal()
     clear_search_cache_requested = Signal()
     reset_hydrus_potential_duplicates_requested = Signal(HydrusRequestParameters)
     db_stats_requested = Signal()
     run_db_maintenance_requested = Signal()
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger, config: Config):
         super().__init__()
+        self._shutting_down = False
         self.logger = logger
+        self.config = config
 
         self.setWindowTitle("Hydrus Video Deduplicator")
         self.setFixedSize(900, 950)
@@ -446,11 +357,11 @@ class MainWindow(QWidget):
 
         self.api_key_textbox = QLineEdit(placeholderText="REQUIRED: Hydrus API Key")
         self.api_key_textbox.setToolTip("Hydrus API key.")
-        self.api_key_textbox.setText(HYDRUS_API_KEY)
+        self.api_key_textbox.setText(self.config.hydrus_api_key)
         self.api_key_textbox.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_textbox.setMaximumHeight(38)
 
-        self.api_url_textbox = QLineEdit(HYDRUS_API_URL, placeholderText="REQUIRED: Hydrus API URL")
+        self.api_url_textbox = QLineEdit(self.config.hydrus_api_url, placeholderText="REQUIRED: Hydrus API URL")
         self.api_url_textbox.setToolTip(
             'Hydrus API URL. Ensure the http/https matches the option in your Hydrus client in "manage services -> client api -> use https"'  # noqa: E501
         )
@@ -489,7 +400,7 @@ class MainWindow(QWidget):
         self.hydrus_query_textbox = QLineEdit(
             placeholderText="OPTIONAL: Hydrus Query (leave empty to deduplicate all videos)"
         )
-        self.hydrus_query_textbox.setToolTip("TODO")
+        self.hydrus_query_textbox.setToolTip("JSON array of search parameters for what videos to hash.")
         self.hydrus_query_textbox.setMaximumHeight(38)
 
         self.failed_page_name_textbox = QLineEdit(placeholderText="OPTIONAL: Failed Page Name")
@@ -498,11 +409,21 @@ class MainWindow(QWidget):
         )
         self.failed_page_name_textbox.setMaximumHeight(38)
 
+        self.similarity_threshold_textbox = QLineEdit(
+            text=str(self.config.similarity_threshold), placeholderText="REQUIRED: Similarity Threshold"
+        )
+        self.similarity_threshold_textbox.setToolTip(
+            """Approximately the percent similarity that two videos must be to be considered similar/duplicate.\n100% means videos must be extremely similar to be considered duplicates.\nMust be between 1 and 100.\n
+If you change this value you should clear the search cache. This isn't cleared automatically because the threshold of previous runs are not saved."""  # noqa: E501
+        )
+        self.similarity_threshold_textbox.setMaximumHeight(38)
+
         self.job_count_textbox = QLineEdit(
-            text="-2", placeholderText="REQUIRED: Number of CPU Threads to use for perceptual hashing"
+            text=str(self.config.job_count),
+            placeholderText="REQUIRED: Number of CPU Threads to use for perceptual hashing",
         )
         self.job_count_textbox.setToolTip(
-            "Number of CPU threads to use for perceptual hashing. Default is all but one core.\nYou can use all CPUs/threads on your machine by setting to -1. If you set it to -2, all CPUs but one are used."  # noqa: E501
+            "Number of CPU cores to use for perceptual hashing. Default is all but one core.\nYou can use all CPUs/threads on your machine by setting to -1. If you set it to -2, all CPUs but one are used."  # noqa: E501
         )
         self.job_count_textbox.setMaximumHeight(38)
 
@@ -552,11 +473,11 @@ class MainWindow(QWidget):
 
         # Database info section
         self.db_database_dir_textbox = QLineEdit(
-            text=str(DEDUP_DATABASE_DIR),
+            text=str(self.config.dedupe_database_dir),
             readOnly=True,
         )
         self.db_database_dir_textbox.setMaximumHeight(38)
-        self.job_count_textbox.setToolTip(str(DEDUP_DATABASE_DIR))
+        self.db_database_dir_textbox.setToolTip(str(self.config.dedupe_database_dir))
 
         # About section
         self.about_qt_btn = QPushButton("About Qt")
@@ -595,8 +516,10 @@ class MainWindow(QWidget):
         config_layout.setSpacing(10)
         config_layout.addWidget(QLabel("Hashing Thread Count"), 0, 0)
         config_layout.addWidget(self.job_count_textbox, 0, 1)
-        config_layout.addWidget(QLabel("Failed Page Name"), 1, 0)
-        config_layout.addWidget(self.failed_page_name_textbox, 1, 1)
+        config_layout.addWidget(QLabel("Similarity Threshold %"), 1, 0)
+        config_layout.addWidget(self.similarity_threshold_textbox, 1, 1)
+        config_layout.addWidget(QLabel("Failed Page Name"), 2, 0)
+        config_layout.addWidget(self.failed_page_name_textbox, 2, 1)
         config_layout.setColumnStretch(1, 1)
         layout.addLayout(config_layout)
 
@@ -660,17 +583,32 @@ class MainWindow(QWidget):
         self.db_upgrade_dialog = None
 
         self.init_requested.emit(self.logger, self.should_skip_step_semaphore)
-        self.init_db_requested.emit()
+        self.init_db_requested.emit(self.config.dedupe_database_dir)
 
-    def __del__(self):
-        if self.worker_thread and self.worker_thread.isRunning():
-            self.worker_thread.wait(deadline=5)
-            try:
-                self.worker_thread.terminate()
-            except RuntimeError:
-                # Thread may have already been deleted.
-                pass
+    def closeEvent(self, event):
+        """Shut the worker thread down before the window goes away."""
+        self._shutting_down = True
 
+        available_skip_permits = self.should_skip_step_semaphore.available()
+        if available_skip_permits > 0:
+            self.should_skip_step_semaphore.tryAcquire(available_skip_permits)
+
+        try:
+            if self.worker_thread is not None and self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                if not self.worker_thread.wait(10000):
+                    # Force stop.
+                    print_and_log(
+                        self.logger, "Worker thread did not stop in time. Forcing it to stop.", logging.WARNING
+                    )
+                    self.worker_thread.terminate()
+                    self.worker_thread.wait()
+        except RuntimeError:
+            # Thread may have already been deleted.
+            pass
+        super().closeEvent(event)
+
+    @ignore_after_close
     def progress_updated_callback(self, progress: DedupeProgress):
         self.current_progress = progress
         if not self.skip_progress_btn.isEnabled():
@@ -699,6 +637,7 @@ class MainWindow(QWidget):
             self.progress_label.setText("Unknown progress state.")
             assert False, f"Unknown progress state{type(progress)}"
 
+    @ignore_after_close
     def db_upgrade_started_callback(self):
         db_upgrade_dialog = QMessageBox(
             windowTitle="Upgrading database.",
@@ -706,17 +645,11 @@ class MainWindow(QWidget):
         )
         db_upgrade_dialog.setStandardButtons(QMessageBox.NoButton)
         db_upgrade_dialog.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
-        db_upgrade_dialog.setStyleSheet("""
-            QMessageBox {
-                background-color: #1a1a1a;
-            }
-            QMessageBox QLabel {
-                color: #e8e8e8;
-            }
-        """)
+        db_upgrade_dialog.setStyleSheet(stylesheet.DARK_STYLESHEET)
         self.db_upgrade_dialog = db_upgrade_dialog
         self.db_upgrade_dialog.show()
 
+    @ignore_after_close
     def db_upgrade_completed_callback(self, exc: Exception | None):
         if exc is None:
             self.db_upgrade_dialog.close()
@@ -729,14 +662,7 @@ class MainWindow(QWidget):
                 )
                 db_upgrade_dialog.setStandardButtons(QMessageBox.NoButton)
                 db_upgrade_dialog.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
-                db_upgrade_dialog.setStyleSheet("""
-                    QMessageBox {
-                        background-color: #1a1a1a;
-                    }
-                    QMessageBox QLabel {
-                        color: #e8e8e8;
-                    }
-                """)
+                db_upgrade_dialog.setStyleSheet(stylesheet.DARK_STYLESHEET)
                 self.db_upgrade_dialog = db_upgrade_dialog
 
                 self.db_upgrade_dialog.setText(
@@ -745,7 +671,7 @@ class MainWindow(QWidget):
                 self.db_upgrade_dialog.show()
 
             abort_button = self.db_upgrade_dialog.addButton(QMessageBox.Abort)
-            abort_button.clicked.connect(lambda: sys.exit(1))
+            abort_button.clicked.connect(lambda: QApplication.instance().exit(1))
 
     def dedupe_callback(self):
         self.deduplicate_btn.setEnabled(False)
@@ -772,19 +698,23 @@ class MainWindow(QWidget):
 
         self.dedupe_requested.emit(request_params, dedupe_params)
 
+    @ignore_after_close
     def dedupe_completed_callback(self, dedupe_completed_result: str | None, exc: Exception | None):
         self.deduplicate_btn.setEnabled(True)
         result_msg = (
             f"Deduplication was successful!\nNumber of similar pairs found: {dedupe_completed_result}\nOpen the Hydrus duplicates processing page to process any potential duplicate pairs."  # noqa: E501
             if dedupe_completed_result
-            else f"Deduplication failed.\nError: {exc}"
+            else f"Deduplication failed.\nError: {exc.pretty_msg + '\n\nException:\n' + str(exc) if isinstance(exc, ClientAPIException) else exc}"  # noqa: E501
         )
+        if not dedupe_completed_result:
+            print_and_log(self.logger, result_msg, logging.ERROR)
         QMessageBox.information(
             self,
             "Deduplication Result",
             result_msg,
         )
 
+    @ignore_after_close
     def test_api_connection_completed(self, api_test_result: APITestResult | None, exc: Exception | None):
         self.test_api_connection_btn.setEnabled(True)
         result_msg = (
@@ -798,6 +728,7 @@ class MainWindow(QWidget):
             result_msg,
         )
 
+    @ignore_after_close
     def reset_hydrus_potential_duplicates_completed(self, result: Exception | None):
         self.reset_hydrus_potential_duplicates_btn.setEnabled(True)
         result_msg = (
@@ -823,6 +754,7 @@ class MainWindow(QWidget):
     def stats_to_string(self, db_stats: DedupeDB.DatabaseStats) -> str:
         return f"DB file size: {db_stats.file_size} bytes \nNumber of Perceptually Hashed Videos: {db_stats.num_videos}"
 
+    @ignore_after_close
     def run_db_maintenance_completed(
         self,
         result: Exception | None,
@@ -893,6 +825,7 @@ class MainWindow(QWidget):
             self.reset_hydrus_potential_duplicates_btn.setEnabled(False)
             self.reset_hydrus_potential_duplicates_requested.emit(request_params)
 
+    @ignore_after_close
     def db_stats_completed(self, db_stats: DedupeDB.DatabaseStats):
         QMessageBox.information(
             self,
@@ -945,14 +878,7 @@ class MainWindow(QWidget):
             )
             self.run_db_maintenance_dialog.setStandardButtons(QMessageBox.NoButton)
             self.run_db_maintenance_dialog.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint)
-            self.run_db_maintenance_dialog.setStyleSheet("""
-                QMessageBox {
-                    background-color: #1a1a1a;
-                }
-                QMessageBox QLabel {
-                    color: #e8e8e8;
-                }
-            """)
+            self.run_db_maintenance_dialog.setStyleSheet(stylesheet.DARK_STYLESHEET)
             self.run_db_maintenance_dialog.show()
             self.run_db_maintenance_btn.setEnabled(False)
             self.run_db_maintenance_requested.emit()
@@ -966,8 +892,8 @@ class MainWindow(QWidget):
         return HydrusRequestParameters(
             api_key=api_key,
             api_url=api_url,
-            local_file_service_keys=HYDRUS_LOCAL_FILE_SERVICE_KEYS,
-            requests_ca_bundle=REQUESTS_CA_BUNDLE,
+            local_file_service_keys=self.config.hydrus_local_file_service_keys,
+            requests_ca_bundle=self.config.requests_ca_bundle,
         )
 
     def get_dedupe_params(self) -> DedupeParameters:
@@ -981,6 +907,15 @@ class MainWindow(QWidget):
         except ValueError:
             raise RuntimeError(f"Invalid thread count: '{self.job_count_textbox.text()}'. Must be an integer.")
 
+        try:
+            similarity_threshold = float(self.similarity_threshold_textbox.text())
+        except ValueError:
+            raise RuntimeError(
+                f"Invalid similarity threshold: '{self.similarity_threshold_textbox.text()}'. Must be a number."
+            )
+        if similarity_threshold < 0.0 or similarity_threshold > 100.0:
+            raise RuntimeError(f"Invalid similarity threshold: '{similarity_threshold}'. Must be between 0 and 100.")
+
         # TODO: Validate the format of this. This should be a json string (or find a better UX way to input).
         custom_query = self.hydrus_query_textbox.text()
         if len(custom_query) == 0:
@@ -990,24 +925,19 @@ class MainWindow(QWidget):
         if len(failed_page_name) == 0:
             failed_page_name = None
 
-        threshold = 50.0  # TODO: Expose to GUI
-        if threshold < 0.0 or threshold > 100.0:
-            raise RuntimeError("Invalid similarity threshold. Must be between 0 and 100.")
-
         return DedupeParameters(
             job_count=job_count,
             failed_page_name=failed_page_name,
             custom_query=custom_query,
-            debug=True,  # TODO: Expose to GUI?
-            threshold=threshold,
+            debug=False,  # TODO: Expose to GUI?
+            similarity_threshold=similarity_threshold,
             skip_hashing=False,
         )
 
 
-def gui_main():
-    debug = True
+def gui_main(config: Config):
+    debug = False
 
-    # CLI debug parameter sets log level to info or debug
     loglevel = logging.INFO
     if debug:
         loglevel = logging.DEBUG
@@ -1019,10 +949,10 @@ def gui_main():
     app = QApplication(sys.argv)
 
     # Native Windows widget metrics + dark theme
-    app.setStyle("windowsvista")
+    app.setStyle("fusion")
     app.setFont(QFont("Segoe UI", 12))
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(stylesheet.DARK_STYLESHEET)
 
-    window = MainWindow(logger)
+    window = MainWindow(logger, config)
     window.show()
     sys.exit(app.exec())

@@ -18,20 +18,11 @@ from hydrusvideodeduplicator.client import (
     HVDClient,
     create_client,
 )
-from hydrusvideodeduplicator.config import (
-    DEDUP_DATABASE_DIR,
-    FAILED_PAGE_NAME,
-    HYDRUS_API_KEY,
-    HYDRUS_API_URL,
-    HYDRUS_LOCAL_FILE_SERVICE_KEYS,
-    HYDRUS_QUERY,
-    REQUESTS_CA_BUNDLE,
-    HVD_GUI,
-    is_windows_exe,
-)
+from hydrusvideodeduplicator.config import Config
 from hydrusvideodeduplicator.db import DedupeDB
 from hydrusvideodeduplicator.dedup import HydrusVideoDeduplicator
 from hydrusvideodeduplicator.dedup_util import print_and_log
+from dotenv import find_dotenv, load_dotenv
 
 import sys
 
@@ -46,24 +37,30 @@ Parameters:
 - debug turns on logging and sets the logging level to debug
 """
 
+loaded_dotenv = load_dotenv()
+config = Config.load_from_env()
+
 
 def main(
-    api_key: Annotated[Optional[str], typer.Option(help="Hydrus API Key", prompt=True)] = None,
-    api_url: Annotated[Optional[str], typer.Option(help="Hydrus API URL")] = HYDRUS_API_URL,
+    api_key: Annotated[
+        Optional[str],
+        typer.Option(help="Hydrus API Key", show_default=False, prompt=False if config.hydrus_api_key else True),
+    ] = config.hydrus_api_key,
+    api_url: Annotated[Optional[str], typer.Option(help="Hydrus API URL")] = config.hydrus_api_url,
     overwrite: Annotated[Optional[Optional[bool]], typer.Option(hidden=True)] = None,  # deprecated
-    query: Annotated[Optional[List[str]], typer.Option(help="Custom Hydrus tag query")] = HYDRUS_QUERY,
+    query: Annotated[Optional[List[str]], typer.Option(help="Custom Hydrus tag query")] = config.hydrus_query,
     threshold: Annotated[
         Optional[float], typer.Option(help="Similarity threshold for a pair of videos where 100 is identical")
-    ] = 50.0,
+    ] = config.similarity_threshold,
     skip_hashing: Annotated[
         Optional[bool], typer.Option(help="Skip perceptual hashing and just search for duplicates")
     ] = False,
     file_service_key: Annotated[
         Optional[List[str]], typer.Option(help="Local file service key")
-    ] = HYDRUS_LOCAL_FILE_SERVICE_KEYS,
+    ] = config.hydrus_local_file_service_keys,
     verify_cert: Annotated[
         Optional[str], typer.Option(help="Path to TLS cert. This forces verification.")
-    ] = REQUESTS_CA_BUNDLE,
+    ] = config.requests_ca_bundle,
     clear_search_tree: Annotated[
         Optional[bool], typer.Option(help="Clear the search tree that tracks what files have already been compared.")
     ] = False,
@@ -75,19 +72,19 @@ def main(
     ] = False,
     failed_page_name: Annotated[
         Optional[str], typer.Option(help="The name of the Hydrus page to add failed files to.")
-    ] = FAILED_PAGE_NAME,
+    ] = config.failed_page_name,
     job_count: Annotated[
         Optional[int],
         typer.Option(help="Number of CPU threads to use for perceptual hashing. Default is all but one core."),
-    ] = -2,
+    ] = config.job_count,
     dedup_database_dir: Annotated[
         Optional[Path], typer.Option(help="The directory to store the database used for dedupe.")
-    ] = DEDUP_DATABASE_DIR,
+    ] = config.dedupe_database_dir,
     verbose: Annotated[Optional[bool], typer.Option(help="Verbose logging")] = False,
     debug: Annotated[Optional[bool], typer.Option(hidden=True)] = False,
     gui: Annotated[  # This gui arg is unused, it's only here to show on --help. See run_main() for more info.
         Optional[bool], typer.Option(help="Launch the GUI. This ignores all other CLI arguments.")
-    ] = HVD_GUI,
+    ] = config.hvd_gui,
 ):
     # Fix mypy errors from optional parameters
     assert threshold is not None and skip_hashing is not None and job_count is not None
@@ -123,7 +120,7 @@ def main(
 
     # CLI overwrites env vars with no default value
     if not api_key:
-        api_key = HYDRUS_API_KEY
+        api_key = config.hydrus_api_key
 
     # Check for necessary variables
     if not api_key:
@@ -132,6 +129,10 @@ def main(
     # This should not happen because there's a default val in config.py
     if not api_url:
         print_and_log(logger, "Hydrus API URL is not set. Please set with '--api-url'.")
+        exit_from_failure()
+
+    if threshold < 0.0 or threshold > 100.0:
+        print_and_log(logger, f"Invalid similarity threshold: {threshold}. Must be between 0 and 100.", logging.ERROR)
         exit_from_failure()
 
     # Client connection
@@ -149,8 +150,7 @@ def main(
         print_and_log(logger, f"Hydrus API version: 'v{hydrus_api_version}'")
         hvdclient.verify_permissions()
     except (FailedHVDClientConnection, ClientAPIException) as exc:
-        print_and_log(logger, str(exc), logging.FATAL)
-        print_and_log(logger, exc.pretty_msg, logging.FATAL)
+        print_and_log(logger, f"{exc.pretty_msg} \nException: {exc}", logging.FATAL)
         exit_from_failure()
 
     if debug:
@@ -159,7 +159,7 @@ def main(
     # Deduplication
 
     if DedupeDB.does_db_exist():
-        print_and_log(logger, f"Found existing database at '{DedupeDB.get_db_file_path()}'")
+        print_and_log(logger, f"Found existing database at: '{DedupeDB.get_db_file_path()}'")
         db = DedupeDB.DedupeDb(DedupeDB.get_db_dir(), DedupeDB.get_db_name())
         db.init_connection()
         # Upgrade the database before doing anything.
@@ -220,17 +220,17 @@ def main(
         db_stats = DedupeDB.get_db_stats(db)
 
     deduper = HydrusVideoDeduplicator(
-        db, client=hvdclient, job_count=job_count, failed_page_name=failed_page_name, custom_query=query
+        db,
+        client=hvdclient,
+        similarity_threshold=threshold,
+        job_count=job_count,
+        failed_page_name=failed_page_name,
+        custom_query=query,
     )
 
     if debug:
         deduper.hydlog.setLevel(logging.DEBUG)
         deduper._DEBUG = True
-
-    if threshold < 0.0 or threshold > 100.0:
-        print("[red] ERROR: Invalid similarity threshold. Must be between 0 and 100.")
-        raise typer.Exit(code=1)
-    HydrusVideoDeduplicator.threshold = threshold
 
     num_similar_pairs = deduper.deduplicate(
         skip_hashing=skip_hashing,
@@ -241,9 +241,12 @@ def main(
     return num_similar_pairs
 
 
-def run_main(gui: bool):
-    print(f"[blue] Hydrus Video Deduplicator {__version__} [/]")
-    if gui or bool(int(HVD_GUI)):
+def run_main(gui: bool, is_executable: bool):
+    print(f"[blue]Hydrus Video Deduplicator {__version__} [/]\n")
+    if loaded_dotenv:
+        # Note: This doesn't mean any values were actually loaded from the .env file.
+        print(f"Config file found: '{find_dotenv()}'")
+    if gui or bool(int(config.hvd_gui)):
         try:
             from hydrusvideodeduplicator.gui.gui import gui_main
         except ImportError as exc:
@@ -254,7 +257,7 @@ def run_main(gui: bool):
             )
             raise typer.Exit(code=1) from exc
 
-        gui_main()
+        gui_main(config)
     else:
         # Allow launching the GUI via CLI using --gui. This is required before the typer.run()
         # because the typer checks if arguments exist, but we don't need any of the args for the GUI
@@ -270,15 +273,15 @@ def run_main(gui: bool):
                 )
                 raise typer.Exit(code=1) from exc
 
-            gui_main()
+            gui_main(config)
         else:
             try:
                 typer.run(main)
             except KeyboardInterrupt as exc:
                 raise typer.Exit(-1) from exc
             finally:
-                if is_windows_exe():
-                    # Hang the console window for the Windows exe, because 99% of users will be running this
+                if is_executable:
+                    # Hang the console window for the CLI exe, because 99% of users will be running this
                     # interactively and will want this pause to see errors/the final results. The other 1% should file
                     # a Github issue if this causes them issues and they want some --no-interactive option, or they should just # noqa: E501
                     # run the Python install.
