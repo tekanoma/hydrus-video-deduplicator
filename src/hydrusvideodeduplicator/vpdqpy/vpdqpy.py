@@ -7,11 +7,9 @@ from typing import TYPE_CHECKING
 
 import av
 from hvdaccelerators import vpdq
-from PIL import Image
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from fractions import Fraction
     from typing import Annotated, TypeAlias
 
     from .typing_utils import ValueRange
@@ -56,9 +54,9 @@ class Vpdq:
         return vpdq.matchHash(query_features, target_features, int(distance_tolerance))
 
     @staticmethod
-    def frame_extract_pyav(video_bytes: bytes) -> Iterator[Image.Image]:
+    def frame_extract_pyav(video_bytes: bytes) -> Iterator[av.VideoFrame]:
         """Extract frames from video"""
-        with av.open(io.BytesIO(video_bytes), metadata_encoding="utf-8", metadata_errors="ignore") as container:
+        with av.open(io.BytesIO(video_bytes)) as container:
             # Check for video in video container
             video_streams = container.streams.video
             if video_streams is None or len(video_streams) < 1:
@@ -68,13 +66,12 @@ class Vpdq:
             video = container.streams.video[0]
             video.thread_type = "AUTO"
 
-            raw_average_fps: Fraction = video.average_rate
             average_fps: int = 1
             # Some videos, like small GIFs, will have a NoneType FPS
-            if raw_average_fps is None or raw_average_fps < 1:
+            if not video.time_base or float(video.average_rate) < 1:
                 log.warning("Average FPS is None or less than 1. Every frame will be hashed.")
             else:
-                average_fps = round(raw_average_fps)
+                average_fps = round(float(video.average_rate))
 
             # The following is a very overly complex "for loop" in order to decode frames from the video.
             # Why not use a for loop? Because for some reason av>=12 will sometimes throw an
